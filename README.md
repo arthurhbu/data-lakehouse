@@ -1,8 +1,8 @@
-# Data Lakehouse — GlobalNexus
+# Data Lakehouse Projeto Arthur
 
 Data Lakehouse completo, 100% Docker, open-source. Plataforma centralizada para ingestão (CDC), transformação (Medallion), camada semântica, BI e IA — tudo local com migração zero-code para nuvem.
 
-**Domínio de referência:** GlobalNexus — Clearing House internacional (pagamentos cross-border, câmbio, double-entry ledger).
+**Domínio de referência:**  Clearing House internacional (pagamentos cross-border, câmbio, double-entry ledger).
 
 ## Stack
 

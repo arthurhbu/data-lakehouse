@@ -1,0 +1,232 @@
+# =============================================================================
+# Data Lakehouse — Docker Compose (profiles)
+#
+# Uso:
+#   make up-core        → Postgres + Kafka + MinIO
+#   make up-cdc         → Kafka Connect + Debezium
+#   make up-catalog     → Iceberg REST Catalog
+#   make up             → core + cdc + catalog
+#
+# Os profiles transform, orchestration, serving e ai serão implementados
+# nas fases seguintes do projeto.
+# =============================================================================
+
+x-common-env: &common-env
+  TZ: America/Sao_Paulo
+
+services:
+
+  # ===========================================================================
+  # PROFILE: core — Postgres + Kafka (KRaft) + MinIO
+  # São os 3 pilares: banco OLTP, broker de eventos, object storage.
+  # ===========================================================================
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["core"]
+    container_name: lakehouse-postgres
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Imagem oficial Apache Kafka (KRaft). Bitnami/kafka:3.9 não existe mais no Hub.
+  # Doc: https://hub.docker.com/r/apache/kafka
+  kafka:
+    image: apache/kafka:3.9.1
+    profiles: ["core"]
+    container_name: lakehouse-kafka
+    # Dev local: volume Docker costuma ser root-owned; appuser da imagem Apache
+    # falha em AccessDenied se o volume já existiu de um run anterior.
+    user: root
+    environment:
+      <<: *common-env
+      # O entrypoint da imagem Apache exige CLUSTER_ID no modo KRaft (UUID Base64).
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
+
+  minio:
+    image: minio/minio:latest
+    profiles: ["core"]
+    container_name: lakehouse-minio
+    command: server /data --console-address ":9001"
+    environment:
+      <<: *common-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["core"]
+    container_name: lakehouse-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: /etc/minio-init/create-buckets.sh
+    environment:
+      <<: *common-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./infra/minio/create-buckets.sh:/etc/minio-init/create-buckets.sh:ro
+    networks:
+      - lakehouse-net
+
+  # ===========================================================================
+  # PROFILE: cdc — Kafka Connect + Debezium
+  # Captura mudanças do Postgres (WAL) e publica em tópicos Kafka.
+  # ===========================================================================
+
+  kafka-connect:
+    image: debezium/connect:2.7
+    profiles: ["cdc"]
+    container_name: lakehouse-kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: ${CONNECT_GROUP_ID}
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    ports:
+      - "${CONNECT_REST_PORT:-8083}:8083"
+    volumes:
+      - ./infra/kafka/connectors:/kafka/connectors:ro
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # PROFILE: catalog — Iceberg REST Catalog
+  # Metastore que permite DuckDB (e outros) localizar tabelas Iceberg no MinIO.
+  # ===========================================================================
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.6.1
+    profiles: ["catalog"]
+    container_name: lakehouse-iceberg-rest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      CATALOG_WAREHOUSE: ${CATALOG_WAREHOUSE}
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+    ports:
+      - "8181:8181"
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===========================================================================
+  # PROFILES: transform, orchestration, serving, ai
+  # Serão implementados nas fases seguintes. Stubs abaixo para referência.
+  # ===========================================================================
+
+  # transform (FASE 3):  DuckDB + dbt  → profile "transform"
+  # orchestration (FASE 4): Airflow     → profile "orchestration"
+  # serving (FASE 6):  FastAPI + BI     → profile "serving"
+  # ai (FASE 6):       Ollama + RAG     → profile "ai"
+
+# =============================================================================
+# Rede e volumes compartilhados
+# =============================================================================
+
+networks:
+  lakehouse-net:
+    name: lakehouse-net
+    driver: bridge
+
+volumes:
+  postgres-data:
+    name: lakehouse-postgres-data
+  kafka-data:
+    name: lakehouse-kafka-data
+  minio-data:
+    name: lakehouse-minio-data

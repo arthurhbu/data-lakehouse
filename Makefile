@@ -18,11 +18,11 @@ up:  ## Sobe toda a stack (core + cdc + catalog)
 up-core:  ## Sobe apenas Postgres, Kafka e MinIO
 	$(COMPOSE) --env-file $(ENV_FILE) --profile core up -d
 
-up-cdc:  ## Sobe Kafka Connect + Debezium
-	$(COMPOSE) --env-file $(ENV_FILE) --profile cdc up -d
+up-cdc:  ## Sobe Kafka Connect + Debezium (inclui core)
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc up -d
 
-up-catalog:  ## Sobe Iceberg REST Catalog
-	$(COMPOSE) --env-file $(ENV_FILE) --profile catalog up -d
+up-catalog:  ## Sobe Iceberg REST Catalog (inclui core)
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile catalog up -d
 
 up-transform:  ## Sobe container DuckDB + dbt
 	$(COMPOSE) --env-file $(ENV_FILE) --profile transform up -d
@@ -104,7 +104,7 @@ generate-data:  ## Gera dados simulados no Postgres via generator.py
 	python ingestion/generator.py
 
 psql:  ## Abre shell psql no Postgres do container
-	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER:-lakehouse} -d $${POSTGRES_DB:-globalnexus}
+	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER:-lakehouse} -d $${POSTGRES_DB:-datalakehouse}
 
 clean:  ## Remove volumes Docker (CUIDADO: apaga dados!)
 	$(COMPOSE) --profile core --profile cdc --profile catalog down -v
