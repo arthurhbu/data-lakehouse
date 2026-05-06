@@ -1,0 +1,51 @@
+# Environments
+.env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Docker volumes (dados locais)
+docker-volumes/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Airflow
+orchestration/airflow/logs/
+orchestration/airflow/airflow.db
+
+# dbt
+transform/dbt_project/target/
+transform/dbt_project/dbt_packages/
+transform/dbt_project/logs/
+
+# DuckDB
+*.duckdb
+*.duckdb.wal
+
+# MinIO data (se montado localmente)
+minio-data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage / Tests
+.coverage
+htmlcov/
+.pytest_cache/
