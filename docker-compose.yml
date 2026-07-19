@@ -1,4 +1,3 @@
-# =============================================================================
 # Data Lakehouse — Docker Compose (profiles)
 #
 # Uso:
@@ -9,17 +8,11 @@
 #
 # Os profiles transform, orchestration, serving e ai serão implementados
 # nas fases seguintes do projeto.
-# =============================================================================
 
 x-common-env: &common-env
   TZ: America/Sao_Paulo
 
 services:
-
-  # ===========================================================================
-  # PROFILE: core — Postgres + Kafka (KRaft) + MinIO
-  # São os 3 pilares: banco OLTP, broker de eventos, object storage.
-  # ===========================================================================
 
   postgres:
     image: postgres:16-alpine
@@ -51,18 +44,13 @@ services:
       timeout: 5s
       retries: 5
 
-  # Imagem oficial Apache Kafka (KRaft). Bitnami/kafka:3.9 não existe mais no Hub.
-  # Doc: https://hub.docker.com/r/apache/kafka
   kafka:
     image: apache/kafka:3.9.1
     profiles: ["core"]
     container_name: lakehouse-kafka
-    # Dev local: volume Docker costuma ser root-owned; appuser da imagem Apache
-    # falha em AccessDenied se o volume já existiu de um run anterior.
     user: root
     environment:
       <<: *common-env
-      # O entrypoint da imagem Apache exige CLUSTER_ID no modo KRaft (UUID Base64).
       CLUSTER_ID: ${KAFKA_CLUSTER_ID}
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -79,6 +67,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CONNECT_PLUGIN_PATH: '/usr/share/java,/usr/share/confluent-hub-components'
     ports:
       - "9092:9092"
       - "9094:9094"
@@ -144,14 +133,11 @@ services:
     networks:
       - lakehouse-net
 
-  # ===========================================================================
-  # PROFILE: cdc — Kafka Connect + Debezium
-  # Captura mudanças do Postgres (WAL) e publica em tópicos Kafka.
-  # ===========================================================================
-
+  # PROFILE cdc — Kafka Connect + Debezium
   kafka-connect:
-    image: debezium/connect:2.7.3.Final
-    profiles: ["cdc"]
+    build:
+      context: ./docker/kafka-connect
+    profiles: ["cdc", "core"]
     container_name: lakehouse-kafka-connect
     depends_on:
       kafka:
@@ -180,22 +166,24 @@ services:
       timeout: 10s
       retries: 5
 
-  # ===========================================================================
   # PROFILE: catalog — Iceberg REST Catalog
-  # Metastore que permite DuckDB (e outros) localizar tabelas Iceberg no MinIO.
-  # ===========================================================================
-
   iceberg-rest:
-    image: tabulario/iceberg-rest:1.6.1
-    profiles: ["catalog"]
+    image: tabulario/iceberg-rest:1.6.0
+    profiles: ["catalog", "core"]
     container_name: lakehouse-iceberg-rest
     depends_on:
       minio:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     environment:
       <<: *common-env
       CATALOG_WAREHOUSE: ${CATALOG_WAREHOUSE}
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      CATALOG_JDBC_USER: ${POSTGRES_USER}
+      CATALOG_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
       CATALOG_S3_ENDPOINT: http://minio:9000
       CATALOG_S3_PATH__STYLE__ACCESS: "true"
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
@@ -206,24 +194,43 @@ services:
     networks:
       - lakehouse-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8181/v1/config"]
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8181' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ===========================================================================
+  # PROFILE: trino — Trino Query Engine for Iceberg
+  trino:
+    image: trinodb/trino:435
+    profiles: ["trino", "serving", "core"]
+    container_name: lakehouse-trino
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/trino/catalog:/etc/trino/catalog:ro
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # PROFILES: transform, orchestration, serving, ai
   # Serão implementados nas fases seguintes. Stubs abaixo para referência.
-  # ===========================================================================
-
   # transform (FASE 3):  DuckDB + dbt  → profile "transform"
   # orchestration (FASE 4): Airflow     → profile "orchestration"
   # serving (FASE 6):  FastAPI + BI     → profile "serving"
   # ai (FASE 6):       Ollama + RAG     → profile "ai"
 
-# =============================================================================
 # Rede e volumes compartilhados
-# =============================================================================
 
 networks:
   lakehouse-net:

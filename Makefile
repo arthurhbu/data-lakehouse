@@ -13,7 +13,7 @@ ENV_FILE = .env
 .PHONY: up down restart status logs
 
 up:  ## Sobe toda a stack (core + cdc + catalog)
-	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog up -d
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog up -d 
 
 up-core:  ## Sobe apenas Postgres, Kafka e MinIO
 	$(COMPOSE) --env-file $(ENV_FILE) --profile core up -d
@@ -33,11 +33,14 @@ up-orchestration:  ## Sobe Airflow (webserver + scheduler + worker)
 up-serving:  ## Sobe FastAPI + BI
 	$(COMPOSE) --env-file $(ENV_FILE) --profile serving up -d
 
+up-trino:  ## Sobe Trino Query Engine
+	$(COMPOSE) --env-file $(ENV_FILE) --profile trino up -d
+
 up-ai:  ## Sobe Ollama + RAG service
 	$(COMPOSE) --env-file $(ENV_FILE) --profile ai up -d
 
 down:  ## Para e remove todos os containers
-	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile transform --profile orchestration --profile serving --profile ai down
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile transform --profile orchestration --profile serving --profile ai --profile trino down
 
 restart: down up  ## Reinicia toda a stack
 
@@ -56,11 +59,18 @@ logs:  ## Mostra logs de todos os containers (follow)
 bronze:  ## Executa job de ingestão Bronze (Kafka → MinIO/Parquet)
 	python ingestion/bronze/persist_bronze.py
 
-silver:  ## Executa apply Silver (Bronze → Iceberg MERGE INTO)
-	python ingestion/bronze/apply_silver.py
+silver:  ## Executa apply Silver (Bronze → Iceberg MERGE INTO) para todas as tabelas
+	python ingestion/bronze/apply_silver.py --table partners
+	python ingestion/bronze/apply_silver.py --table accounts
+	python ingestion/bronze/apply_silver.py --table transactions
+	python ingestion/bronze/apply_silver.py --table payment_events
+	python ingestion/bronze/apply_silver.py --table ledger_entries
 
 gold:  ## Executa transformações Gold via dbt
 	cd transform/dbt_project && dbt run --select marts
+
+reconcile:  ## Roda script de reconciliação ponta-a-ponta (Postgres vs Bronze vs Silver)
+	python scripts/reconciliation/check_pipeline.py
 
 # ---------------------------------------------------------------------------
 # Manutenção Iceberg (Zeladoria)
@@ -102,6 +112,9 @@ dbt-docs:  ## Gera e serve documentação dbt
 
 generate-data:  ## Gera dados simulados no Postgres via generator.py
 	python ingestion/generator.py
+
+generate-stream:  ## Gera dados de forma contínua para simular CDC
+	python ingestion/generator.py --continuous --delay 1.5
 
 psql:  ## Abre shell psql no Postgres do container
 	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER:-lakehouse} -d $${POSTGRES_DB:-datalakehouse}

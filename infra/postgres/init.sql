@@ -1,5 +1,5 @@
 -- =============================================================================
--- Data Lakehouse — DDL do domínio GlobalNexus
+-- Data Lakehouse — DDL do domínio 
 -- Clearing House internacional: pagamentos cross-border, câmbio, double-entry
 -- =============================================================================
 
