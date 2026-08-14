@@ -59,6 +59,8 @@ data-lakehouse/
 └── README.md
 ```
 
+Para retomar o desenvolvimento em uma nova sessao, consulte [docs/CONTINUITY.md](docs/CONTINUITY.md).
+
 ## Quick Start
 
 ```bash
