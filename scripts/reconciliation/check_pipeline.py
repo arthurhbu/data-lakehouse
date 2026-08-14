@@ -1,94 +1,181 @@
+"""Reconciliação de contagem e invariante contábil entre as camadas."""
+
+from __future__ import annotations
+
 import os
+from decimal import Decimal
+from urllib.parse import urlparse
+
 import duckdb
 import psycopg2
-from pyiceberg.catalog import load_catalog
 from dotenv import load_dotenv
+from pyiceberg.catalog import load_catalog
+from pyiceberg.expressions import EqualTo
 from rich.console import Console
 from rich.table import Table
+
+from ingestion.cdc_contract import create_latest_cdc_view
+from ingestion.silver.silver_schemas import TABLE_CONFIGS
+
 
 load_dotenv()
 console = Console()
 
-def get_postgres_count(table_name):
-    conn = psycopg2.connect(
+
+def get_postgres_connection():
+    return psycopg2.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         port=int(os.getenv("POSTGRES_PORT", 5432)),
         dbname=os.getenv("POSTGRES_DB", "datalakehouse"),
         user=os.getenv("POSTGRES_USER", "lakehouse"),
-        password=os.getenv("POSTGRES_PASSWORD", "changeme_pg"),
+        password=os.environ["POSTGRES_PASSWORD"],
     )
-    cur = conn.cursor()
-    cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-    count = cur.fetchone()[0]
-    conn.close()
-    return count
 
-def get_bronze_count(table_name, pk):
-    con = duckdb.connect()
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    minio_user = os.getenv("MINIO_ROOT_USER")
-    minio_pass = os.getenv("MINIO_ROOT_PASSWORD")
-    con.execute(f"""
-        CREATE SECRET minio_secret(
-            TYPE S3, KEY_ID '{minio_user}', SECRET '{minio_pass}',
-            REGION 'us-east-1', ENDPOINT 'localhost:9000',
-            USE_SSL false, URL_STYLE 'path'
-        );
-    """)
-    path = f"s3://bronze/topics/cdc.public.{table_name}/*/*/*/*.json"
-    try:
-        # Pega a contagem deduplicada da Bronze (simulando a mesma lógica da Silver)
-        res = con.execute(f"""
-            SELECT COUNT(DISTINCT payload.after.{pk}) 
-            FROM read_json_auto('{path}', ignore_errors=true) 
-            WHERE payload.after IS NOT NULL
-        """).fetchone()[0]
-        return res
-    except Exception as e:
-        return 0
 
-def get_silver_count(table_name):
-    try:
-        catalog = load_catalog(
-            "default",
-            **{
-                "type": "rest",
-                "uri": "http://localhost:8181/",
-                "s3.endpoint": "http://localhost:9000",
-                "s3.access-key-id": os.getenv("MINIO_ROOT_USER"),
-                "s3.secret-access-key": os.getenv("MINIO_ROOT_PASSWORD"),
-            },
+def get_catalog():
+    return load_catalog(
+        "default",
+        **{
+            "type": "rest",
+            "uri": os.getenv("CATALOG_URI", "http://localhost:8181").rstrip("/") + "/",
+            "s3.endpoint": os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
+            "s3.access-key-id": os.environ["MINIO_ROOT_USER"],
+            "s3.secret-access-key": os.environ["MINIO_ROOT_PASSWORD"],
+            "s3.region": "us-east-1",
+            "s3.path-style-access": "true",
+        },
+    )
+
+
+def get_postgres_count(connection, table_name: str) -> int:
+    with connection.cursor() as cursor:
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        return cursor.fetchone()[0]
+
+
+def _configure_duckdb_s3(connection) -> None:
+    endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+    parsed = urlparse(endpoint)
+    endpoint_host = parsed.netloc or parsed.path
+    use_ssl = str(endpoint.startswith("https://")).lower()
+    user = os.environ["MINIO_ROOT_USER"].replace("'", "''")
+    password = os.environ["MINIO_ROOT_PASSWORD"].replace("'", "''")
+    endpoint_host = endpoint_host.replace("'", "''")
+
+    connection.execute("INSTALL httpfs; LOAD httpfs;")
+    connection.execute(
+        f"""
+        CREATE OR REPLACE SECRET minio_secret (
+            TYPE S3,
+            KEY_ID '{user}',
+            SECRET '{password}',
+            REGION 'us-east-1',
+            ENDPOINT '{endpoint_host}',
+            USE_SSL {use_ssl},
+            URL_STYLE 'path'
         )
-        table = catalog.load_table(f"silver.{table_name}")
-        # Converte para arrow table e pega o número exato de linhas
-        return len(table.scan().to_arrow())
-    except Exception as e:
-        return 0
+        """
+    )
 
-def main():
-    tables = [
-        {"name": "transactions", "pk": "transaction_id"},
-        {"name": "payment_events", "pk": "event_id"},
-        {"name": "ledger_entries", "pk": "entry_id"}
-    ]
-    
-    t = Table(title="Reconciliação Ponta-a-Ponta (Zero Perda de Dados)")
-    t.add_column("Tabela", style="cyan")
-    t.add_column("Postgres (Origem)", style="magenta", justify="right")
-    t.add_column("Bronze CDC (MinIO)", style="yellow", justify="right")
-    t.add_column("Silver (Iceberg)", style="blue", justify="right")
-    t.add_column("Status", justify="center")
-    
-    for tb in tables:
-        pg_c = get_postgres_count(tb["name"])
-        br_c = get_bronze_count(tb["name"], tb["pk"])
-        sl_c = get_silver_count(tb["name"])
-        
-        status = "[bold green]✓ Sincronizado[/bold green]" if pg_c == br_c == sl_c else "[bold red]✗ Divergente[/bold red]"
-        t.add_row(tb["name"], str(pg_c), str(br_c), str(sl_c), status)
-        
-    console.print(t)
-    console.print("\n[yellow]DICA:[/yellow] Se a Silver estiver atrasada, lembre-se de rodar 'make silver' para processar os dados da Bronze.")
+
+def get_bronze_count(table_name: str, config: dict) -> int:
+    connection = duckdb.connect()
+    try:
+        _configure_duckdb_s3(connection)
+        path = f"s3://bronze/topics/cdc.public.{table_name}/*/*/*/*.json"
+        create_latest_cdc_view(
+            connection,
+            path,
+            config["schema"],
+            config["primary_key"],
+        )
+        return connection.execute(
+            "SELECT COUNT(*) FROM bronze_latest WHERE op != 'd'"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+
+def get_silver_table(catalog, table_name: str):
+    return catalog.load_table(f"silver.{table_name}")
+
+
+def get_silver_count(catalog, table_name: str) -> int:
+    return len(
+        get_silver_table(catalog, table_name)
+        .scan(row_filter=EqualTo("_cdc_deleted", False))
+        .to_arrow()
+    )
+
+
+def get_postgres_ledger_total(connection) -> Decimal:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT COALESCE(SUM(amount), 0) FROM ledger_entries")
+        return cursor.fetchone()[0]
+
+
+def get_silver_ledger_total(catalog) -> Decimal:
+    ledger = (
+        get_silver_table(catalog, "ledger_entries")
+        .scan(row_filter=EqualTo("_cdc_deleted", False))
+        .to_arrow()
+    )
+    connection = duckdb.connect()
+    try:
+        connection.register("silver_ledger", ledger)
+        return connection.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM silver_ledger"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+
+def main() -> None:
+    postgres = get_postgres_connection()
+    catalog = get_catalog()
+    counts_match = True
+
+    report = Table(title="Reconciliação ponta a ponta")
+    report.add_column("Tabela", style="cyan")
+    report.add_column("Postgres", style="magenta", justify="right")
+    report.add_column("Bronze atual", style="yellow", justify="right")
+    report.add_column("Silver", style="blue", justify="right")
+    report.add_column("Status", justify="center")
+
+    try:
+        for table_name, config in TABLE_CONFIGS.items():
+            postgres_count = get_postgres_count(postgres, table_name)
+            bronze_count = get_bronze_count(table_name, config)
+            silver_count = get_silver_count(catalog, table_name)
+            synchronized = postgres_count == bronze_count == silver_count
+            counts_match = counts_match and synchronized
+            status = (
+                "[bold green]OK[/bold green]"
+                if synchronized
+                else "[bold red]DIVERGENTE[/bold red]"
+            )
+            report.add_row(
+                table_name,
+                str(postgres_count),
+                str(bronze_count),
+                str(silver_count),
+                status,
+            )
+
+        postgres_total = get_postgres_ledger_total(postgres)
+        silver_total = get_silver_ledger_total(catalog)
+    finally:
+        postgres.close()
+
+    console.print(report)
+    console.print(
+        f"Ledger Postgres={postgres_total} | Silver={silver_total} | "
+        f"Soma Zero={'OK' if postgres_total == silver_total == 0 else 'FALHOU'}"
+    )
+
+    if not counts_match or postgres_total != silver_total or silver_total != 0:
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()
