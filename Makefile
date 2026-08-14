@@ -24,23 +24,23 @@ up-cdc:  ## Sobe Kafka Connect + Debezium (inclui core)
 up-catalog:  ## Sobe Iceberg REST Catalog (inclui core)
 	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile catalog up -d
 
-up-transform:  ## Sobe container DuckDB + dbt
-	$(COMPOSE) --env-file $(ENV_FILE) --profile transform up -d
+up-transform:  ## FASE 3 — ainda não implementado
+	@echo "Profile transform ainda não implementado (FASE 3)."
 
-up-orchestration:  ## Sobe Airflow (webserver + scheduler + worker)
-	$(COMPOSE) --env-file $(ENV_FILE) --profile orchestration up -d
+up-orchestration:  ## FASE 4 — ainda não implementado
+	@echo "Profile orchestration ainda não implementado (FASE 4)."
 
-up-serving:  ## Sobe FastAPI + BI
-	$(COMPOSE) --env-file $(ENV_FILE) --profile serving up -d
+up-serving:  ## FASE 6 — ainda não implementado
+	@echo "FastAPI e BI ainda não implementados (FASE 6). Use make up-trino para consultas."
 
 up-trino:  ## Sobe Trino Query Engine
-	$(COMPOSE) --env-file $(ENV_FILE) --profile trino up -d
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile catalog --profile trino up -d
 
-up-ai:  ## Sobe Ollama + RAG service
-	$(COMPOSE) --env-file $(ENV_FILE) --profile ai up -d
+up-ai:  ## FASE 6 — ainda não implementado
+	@echo "Profile ai ainda não implementado (FASE 6)."
 
 down:  ## Para e remove todos os containers
-	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile transform --profile orchestration --profile serving --profile ai --profile trino down
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile trino down
 
 restart: down up  ## Reinicia toda a stack
 
@@ -54,23 +54,31 @@ logs:  ## Mostra logs de todos os containers (follow)
 # Pipeline de dados
 # ---------------------------------------------------------------------------
 
-.PHONY: bronze silver gold
+.PHONY: register-connectors bronze silver gold
 
-bronze:  ## Executa job de ingestão Bronze (Kafka → MinIO/Parquet)
-	python ingestion/bronze/persist_bronze.py
+register-connectors:  ## Registra/atualiza Debezium e S3 Sink no Kafka Connect
+	python -m scripts.register_connectors
+
+bronze: register-connectors  ## Bronze é materializada continuamente pelo S3 Sink
 
 silver:  ## Executa apply Silver (Bronze → Iceberg MERGE INTO) para todas as tabelas
-	python ingestion/bronze/apply_silver.py --table partners
-	python ingestion/bronze/apply_silver.py --table accounts
-	python ingestion/bronze/apply_silver.py --table transactions
-	python ingestion/bronze/apply_silver.py --table payment_events
-	python ingestion/bronze/apply_silver.py --table ledger_entries
+	python -m ingestion.silver.apply_silver --table partners
+	python -m ingestion.silver.apply_silver --table accounts
+	python -m ingestion.silver.apply_silver --table transactions
+	python -m ingestion.silver.apply_silver --table payment_events
+	python -m ingestion.silver.apply_silver --table ledger_entries
 
 gold:  ## Executa transformações Gold via dbt
 	cd transform/dbt_project && dbt run --select marts
 
 reconcile:  ## Roda script de reconciliação ponta-a-ponta (Postgres vs Bronze vs Silver)
-	python scripts/reconciliation/check_pipeline.py
+	python -m scripts.reconciliation.check_pipeline
+
+migrate-silver-contract:  ## Dry-run da migração reversível da Silver legada
+	python -m scripts.migrate_silver_contract
+
+migrate-silver-contract-apply:  ## Preserva Silver legada e libera reconstrução v2
+	python -m scripts.migrate_silver_contract --apply
 
 # ---------------------------------------------------------------------------
 # Manutenção Iceberg (Zeladoria)

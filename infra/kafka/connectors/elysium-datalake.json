@@ -1,17 +1,24 @@
 {
+  "name": "elysium-datalake",
+  "config": {
   "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
 
   "database.hostname": "postgres",
   "database.port": "5432",
-  "database.user": "lakehouse",
-  "database.password": "changeme_pg",
-  "database.dbname": "datalakehouse",
+  "database.user": "${POSTGRES_USER}",
+  "database.password": "${POSTGRES_PASSWORD}",
+  "database.dbname": "${POSTGRES_DB}",
 
   "plugin.name": "pgoutput",
   "publication.name": "lakehouse_cdc",
   "slot.name": "lakehouse_slot",
 
   "topic.prefix": "cdc",
+
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
 
   "schema.include.list": "public",
   "table.include.list": "public.partners,public.accounts,public.transactions,public.payment_events,public.ledger_entries",
@@ -21,4 +28,5 @@
   "decimal.handling.mode": "string",
   "time.precision.mode": "connect",
   "tombstones.on.delete": "false"
+  }
 }

@@ -34,7 +34,9 @@ data-lakehouse/
 │   └── catalog/             # Config REST Catalog
 ├── ingestion/
 │   ├── generator.py         # Simulador de dados
-│   ├── bronze/              # Jobs persistência Bronze
+│   ├── cdc_contract.py      # Normalização/validação do envelope Debezium
+│   ├── bronze/              # Bronze persistida pelo Kafka Connect S3 Sink
+│   ├── silver/              # Apply idempotente em tabelas Iceberg
 │   └── cdc/                 # Configs e validações CDC
 ├── transform/
 │   └── dbt_project/         # Projeto dbt (staging/marts/semantic)
@@ -63,16 +65,21 @@ data-lakehouse/
 # 1. Clone e configure
 cp .env.example .env        # Ajuste senhas e tokens
 
-# 2. Suba a infraestrutura core (Postgres + Kafka + MinIO)
-make up-core
+# 2. Suba infraestrutura, CDC e catálogo
+make up
 
-# 3. Verifique o status
+# 3. Registre/atualize Debezium e S3 Sink
+make register-connectors
+
+# 4. Verifique o status
 make status
 
-# 4. Gere dados de teste
+# 5. Gere dados de teste e aplique a Silver
 make generate-data
+make silver
+make reconcile
 
-# 5. Veja todos os comandos disponíveis
+# 6. Veja todos os comandos disponíveis
 make help
 ```
 
@@ -85,16 +92,17 @@ O projeto usa profiles para subir apenas o que você precisa:
 | `core` | Postgres, Kafka (KRaft), MinIO | `make up-core` |
 | `cdc` | Kafka Connect + Debezium | `make up-cdc` |
 | `catalog` | Iceberg REST Catalog | `make up-catalog` |
-| `transform` | DuckDB + dbt | `make up-transform` |
-| `orchestration` | Airflow | `make up-orchestration` |
-| `serving` | FastAPI + BI | `make up-serving` |
-| `ai` | Ollama + RAG | `make up-ai` |
+| `trino` | Trino conectado ao catálogo Iceberg | `make up-trino` |
+
+Os profiles `transform`, `orchestration`, `serving` e `ai` ainda pertencem às
+fases futuras. Os respectivos comandos informam esse estado sem tentar subir
+serviços inexistentes.
 
 ## Fases do Projeto
 
-- **FASE 0** — Repositório + Docker + DDL *(atual)*
-- **FASE 1** — CDC Debezium + Bronze
-- **FASE 2** — Silver Iceberg + MERGE + Validações
+- **FASE 0** — Repositório + Docker + DDL *(implementada)*
+- **FASE 1** — CDC Debezium + Bronze *(implementada e validada E2E)*
+- **FASE 2** — Silver Iceberg + apply idempotente *(fase atual)*
 - **FASE 3** — Gold dbt + MetricFlow + Testes
 - **FASE 4** — Airflow + Observabilidade + Zeladoria
 - **FASE 5** — LGPD + Reconciliação + Contracts
@@ -107,3 +115,40 @@ O projeto usa profiles para subir apenas o que você precisa:
 3. **Auditabilidade** — qualquer número rastreável até a origem
 4. **Soma Zero** — `SUM(débitos) + SUM(créditos) = 0`
 5. **Zero-code para nuvem** — MinIO → S3, DuckDB → MotherDuck
+
+## Contrato Bronze → Silver
+
+- A Bronze é append-only e preserva o evento Debezium original.
+- São aceitos envelopes com os campos CDC na raiz ou dentro de `payload`.
+- `op`, `source.lsn` e a chave primária são obrigatórios; lotes inválidos falham.
+- O maior LSN por chave define o estado do micro-batch.
+- Operações `c`, `r` e `u` substituem atomicamente somente as chaves afetadas.
+- Operações `d` viram tombstones (`_cdc_deleted=true`) na Silver; consumidores
+  filtram essas linhas e o LSN da exclusão impede ressurreição por replay antigo.
+- Valores monetários usam `DECIMAL`, nunca ponto flutuante.
+
+Tabelas Silver criadas antes da adoção dos contratos decimais precisam de uma
+migração explícita. O pipeline falha ao detectar um schema antigo, evitando uma
+conversão silenciosa.
+
+```bash
+# Visualiza a migração sem alterar o catálogo
+make migrate-silver-contract
+
+# Renomeia tabelas incompatíveis para silver_legacy e preserva os dados
+make migrate-silver-contract-apply
+```
+
+Schema Registry/Avro está deliberadamente adiado para a Fase 5. A migração deve
+usar tópicos versionados; formatos serializados diferentes nunca devem ser
+misturados nos tópicos `cdc.public.*` atuais.
+
+## Testes locais
+
+```bash
+python -m pytest -q
+```
+
+Os testes cobrem envelopes CDC wrapped/unwrapped, deduplicação por LSN,
+fail-fast de contrato, precisão decimal, idempotência, tombstones e replay fora
+de ordem no PyIceberg.

@@ -137,7 +137,7 @@ services:
   kafka-connect:
     build:
       context: ./docker/kafka-connect
-    profiles: ["cdc", "core"]
+    profiles: ["cdc"]
     container_name: lakehouse-kafka-connect
     depends_on:
       kafka:
@@ -169,7 +169,7 @@ services:
   # PROFILE: catalog — Iceberg REST Catalog
   iceberg-rest:
     image: tabulario/iceberg-rest:1.6.0
-    profiles: ["catalog", "core"]
+    profiles: ["catalog"]
     container_name: lakehouse-iceberg-rest
     depends_on:
       minio:
@@ -202,7 +202,7 @@ services:
   # PROFILE: trino — Trino Query Engine for Iceberg
   trino:
     image: trinodb/trino:435
-    profiles: ["trino", "serving", "core"]
+    profiles: ["trino"]
     container_name: lakehouse-trino
     depends_on:
       iceberg-rest:
@@ -211,6 +211,8 @@ services:
         condition: service_healthy
     environment:
       <<: *common-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
       - "8080:8080"
     volumes:
