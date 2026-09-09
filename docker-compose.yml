@@ -35,7 +35,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro,Z
     networks:
       - lakehouse-net
     healthcheck:
@@ -129,7 +129,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
-      - ./infra/minio/create-buckets.sh:/etc/minio-init/create-buckets.sh:ro
+      - ./infra/minio/create-buckets.sh:/etc/minio-init/create-buckets.sh:ro,Z
     networks:
       - lakehouse-net
 
@@ -157,7 +157,7 @@ services:
     ports:
       - "${CONNECT_REST_PORT:-8083}:8083"
     volumes:
-      - ./infra/kafka/connectors:/kafka/connectors:ro
+      - ./infra/kafka/connectors:/kafka/connectors:ro,Z
     networks:
       - lakehouse-net
     healthcheck:
@@ -216,7 +216,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./infra/trino/catalog:/etc/trino/catalog:ro
+      - ./infra/trino/catalog:/etc/trino/catalog:ro,Z
     networks:
       - lakehouse-net
     healthcheck:
