@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: silver
+    description: "Tabelas consolidadas da camada Silver no catálogo Iceberg."
+    database: lakehouse
+    schema: silver
+
+    tables:
+      - name: partners
+      - name: accounts
+      - name: transactions
+      - name: ledger_entries
+      - name: payment_events

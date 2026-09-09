@@ -1,0 +1,37 @@
+lakehouse_transform:
+  target: dev
+
+  outputs:
+    dev:
+      type: duckdb
+      path: target/dbt.duckdb
+      database: lakehouse
+      schema: gold
+      threads: 1
+
+      extensions:
+        - httpfs
+        - iceberg
+
+      secrets:
+        - type: s3
+          name: minio_secret
+          key_id: "{{ env_var('MINIO_ROOT_USER')}}"
+          secret: "{{ env_var('MINIO_ROOT_PASSWORD')}}"
+          region: us-east-1
+          endpoint: localhost:9000
+          use_ssl: false
+          url_style: path
+        
+        - type: iceberg
+          name: iceberg_local
+          token: local-development
+
+      attach:
+        - path: warehouse
+          alias: lakehouse
+          options:
+            type: iceberg
+            endpoint: "{{ env_var('CATALOG_URI')}}"
+            secret: iceberg_local
+            access_delegation_mode: none

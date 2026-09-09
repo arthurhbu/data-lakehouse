@@ -1,0 +1,13 @@
+name: lakehouse_transform
+version: 1.0.0
+config-version: 2
+
+profile: lakehouse_transform
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+clean-targets:
+  - target
+  - dbt_packages

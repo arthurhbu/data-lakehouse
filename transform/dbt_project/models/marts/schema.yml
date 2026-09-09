@@ -1,0 +1,62 @@
+version: 2
+
+models:
+  - name: dim_partners
+    description: "Dimensão de parceiros de clearing."
+
+    columns:
+      - name: partner_id
+        description: "Identificador único do parceiro."
+        data_tests:
+          - not_null
+          - unique
+        
+      - name: partner_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["merchant", "bank", "processor"]
+
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["active", "suspended", "inactive"]
+    
+  - name: dim_accounts
+    description: "Dimensão de contas financeiras dos parceiros."
+
+    columns: 
+      - name: account_id
+        description: "Identificador único da conta."
+        data_tests: 
+          - not_null
+          - unique
+
+      - name: partner_id
+        description: "Parceiro proprietário da conta."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_partners')
+                field: partner_id
+
+      - name: account_currency
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["USD", "CAD", "BRL", "EUR", "GBP", "JPY", "CHF"]
+
+      - name: account_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["settlement", "holding", "fee"]
+
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["active", "frozen", "closed"]
