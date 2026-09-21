@@ -1,56 +1,88 @@
-# Handoff — continuidade da Silver
+# Handoff — Gold concluída e continuidade no Airflow
 
-## Estado do projeto
+## Estado atual
 
-O projeto esta na Fase 2: CDC do Postgres para Kafka/MinIO e materializacao da camada Silver em Iceberg. A Bronze e imutavel e armazena eventos CDC; a Silver representa o estado atual por chave primaria.
+As fases CDC/Bronze, Silver MVP e Gold MVP estão concluídas. A próxima fase é
+**Airflow e operabilidade**. O método de trabalho continua sendo: explicar o
+conceito, implementar um incremento pequeno, provocar/observar seu comportamento
+e interpretar a evidência.
 
-Na ultima validacao ponta a ponta, Postgres, Kafka, Kafka Connect, MinIO e o catalogo Iceberg estavam em execucao. Os conectores Debezium e S3 Sink estavam ativos, e a reconciliacao confirmou:
+## Evidência atual de 2026-09-21
 
-- transactions: 125 registros
-- payment_events: 125 registros
-- ledger_entries: 250 registros
-- accounts: 30 registros
-- partners: 10 registros
-- soma do ledger igual a zero no Postgres e na Silver
+- Debezium e S3 Sink estavam `RUNNING`.
+- Uma carga controlada adicionou 10 transações, 10 eventos e 20 lançamentos.
+- Após a rotação de 60 segundos do S3 Sink, a Silver aplicou exatamente esse
+  delta e ignorou 50/50/100 eventos antigos como replay.
+- A reconciliação confirmou Postgres = Bronze = Silver: 60 `transactions`, 60
+  `payment_events`, 120 `ledger_entries`, 30 `accounts` e 10 `partners`.
+- A soma do ledger foi `0.0000` no Postgres e na Silver.
+- `dbt build`: 10 modelos e 33 testes, todos aprovados (`PASS=43`).
+- `dbt docs generate` criou o catálogo e o lineage.
 
-## Implementacao entregue
+## Gold entregue
 
-- `ingestion/cdc_contract.py` normaliza envelopes Debezium e exige operacao, LSN e chave primaria.
-- `ingestion/silver/apply_silver.py` materializa o ultimo evento por chave, usando LSN; replays e eventos atrasados sao ignorados.
-- Deletes viram tombstones (`_cdc_deleted = true`) para impedir que eventos antigos recriem registros excluidos.
-- Valores financeiros usam `DECIMAL`; timestamps usam timezone; as tabelas Silver possuem `_cdc_lsn` e `_cdc_deleted`.
-- `scripts/migrate_silver_contract.py` preserva tabelas incompatíveis em `silver_legacy` antes da reconstrucao.
-- `scripts/register_connectors.py` registra/atualiza conectores com segredos resolvidos por variaveis de ambiente.
-- `scripts/reconciliation/check_pipeline.py` compara Postgres, Bronze normalizado e Silver ativa com a mesma semantica CDC.
+- Cinco modelos staging filtram tombstones.
+- Dimensões: `dim_partners`, `dim_accounts` e `dim_currencies`.
+- `fct_daily_volume`: grão data de criação + moeda original.
+- `fct_partner_net_position`: grão parceiro + moeda do lançamento; apresenta
+  débitos e créditos positivos e `net_position = créditos - débitos`.
+- O fato de posição representa apenas movimentos observados, não saldo bancário
+  com saldo inicial.
+- Testes cobrem chaves, relacionamentos, domínios, reconciliação, grão único e
+  soma zero por transação.
+- A verificação manual confirmou que a posição consolidada fecha em zero para
+  cada moeda.
+- A análise `top_partner_net_position_by_currency` demonstra o consumo da Gold
+  com ranking dos três maiores parceiros por moeda.
 
-## Como validar e operar
+## Simplificações conscientes do MVP
 
-```powershell
-make up-cdc
-make up-catalog
-make register-connectors
+- Os modelos staging e marts compartilham atualmente o namespace Iceberg
+  `gold`. Uma separação física (`staging`/`gold`) pode ser adotada quando houver
+  consumidores externos ou controle de acesso por camada.
+- Os modelos dbt usam materialização `table` e são reconstruídos integralmente.
+  O volume local torna essa escolha adequada; incrementalidade entra somente
+  quando custo ou tempo de execução justificarem o estado adicional.
+
+## Próximo ciclo: Airflow mínimo e explicável
+
+1. Definir a arquitetura local mínima do Airflow e o papel de cada componente.
+2. Subir scheduler, UI, metadata database e um executor adequado ao projeto.
+3. Criar uma DAG `lakehouse_pipeline`:
+   `apply_silver` → `dbt build` → `reconciliation`.
+4. Configurar retries, timeout, data interval e concorrência.
+5. Provocar uma falha, observar os estados e reexecutar somente a task necessária.
+6. Executar um backfill e comprovar que a pipeline continua idempotente.
+
+A Bronze não será transformada em tarefa batch: Debezium/Kafka/S3 Sink continuam
+responsáveis pelo CDC contínuo; Airflow orquestrará os consumidores batch.
+
+## Roadmap preservado após o Airflow
+
+**Alta prioridade:**
+
+1. Checkpoint/high watermark da Silver.
+2. Metadados operacionais: duração, linhas, último LSN e reconciliação.
+3. DLQ com correção e replay.
+4. Schema evolution compatível e rejeição de breaking change.
+5. Manutenção Iceberg orientada por snapshots e small files.
+
+**Prioridade baixa, sem apagar:** MetricFlow, Schema Registry, contracts
+enforced, freshness contínua, stack dedicada de observabilidade, métricas de
+chargeback/settlement, API, BI e IA.
+
+## Comandos para reproduzir a validação atual
+
+```bash
+make up
+.venv/bin/python -m scripts.register_connectors
+.venv/bin/python ingestion/generator.py --transactions 10
 make silver
 make reconcile
-.\.venv\Scripts\python.exe -m pytest -q
+cd transform/dbt_project
+../../.venv/bin/dbt build
+../../.venv/bin/dbt docs generate
 ```
 
-Os testes esperados sao `10 passed`. Para verificar a configuracao Docker sem iniciar servicos, use `docker compose config`.
-
-## Proximas etapas para concluir a Silver
-
-1. Implementar evolucao de schema controlada, com politica para campos novos, removidos e alteracoes de tipo.
-2. Criar DLQ para eventos invalidos, com causa, payload original e metadados de origem; o pipeline deve continuar processando eventos validos.
-3. Definir rotinas de manutencao Iceberg: compactacao de arquivos pequenos, expiracao de snapshots e monitoramento.
-4. Adicionar observabilidade operacional: lag dos conectores, idade do ultimo LSN, volume de tombstones e alertas de reconciliacao.
-5. Somente apos esses controles, iniciar transformacoes Gold/dbt sobre a Silver estabilizada.
-
-## Decisao arquitetural pendente
-
-Schema Registry/Avro foi deliberadamente adiado. Os topicos atuais usam JSON simples; misturar JsonSchemaConverter em topicos existentes causou erro de framing (`Unknown magic byte`). Quando essa etapa for retomada, criar topicos versionados e migrar consumidores de forma gradual; nao alterar a serializacao dos topicos `cdc.public.*` atuais em uso.
-
-## Commits que estabelecem este ponto
-
-- `5e8696d feat(silver): harden CDC materialization semantics`
-- `90b7486 chore(platform): automate connector registration and profiles`
-
-Leia este arquivo no inicio de uma nova sessao antes de alterar a camada Silver.
+Leia este arquivo no início da próxima sessão. O próximo trabalho é entender e
+montar a infraestrutura mínima do Airflow, não adicionar novos marts.

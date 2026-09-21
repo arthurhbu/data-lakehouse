@@ -5,6 +5,8 @@
 
 COMPOSE = docker compose
 ENV_FILE = .env
+PYTHON = .venv/bin/python
+DBT = ../../.venv/bin/dbt
 
 # ---------------------------------------------------------------------------
 # Infraestrutura (Docker Compose profiles)
@@ -24,8 +26,8 @@ up-cdc:  ## Sobe Kafka Connect + Debezium (inclui core)
 up-catalog:  ## Sobe Iceberg REST Catalog (inclui core)
 	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile catalog up -d
 
-up-transform:  ## FASE 3 — ainda não implementado
-	@echo "Profile transform ainda não implementado (FASE 3)."
+up-transform:  ## Gold roda localmente, sem profile Docker dedicado
+	@echo "Use make gold: o dbt roda pela .venv local, sem profile Docker."
 
 up-orchestration:  ## FASE 4 — ainda não implementado
 	@echo "Profile orchestration ainda não implementado (FASE 4)."
@@ -57,28 +59,28 @@ logs:  ## Mostra logs de todos os containers (follow)
 .PHONY: register-connectors bronze silver gold
 
 register-connectors:  ## Registra/atualiza Debezium e S3 Sink no Kafka Connect
-	python -m scripts.register_connectors
+	$(PYTHON) -m scripts.register_connectors
 
 bronze: register-connectors  ## Bronze é materializada continuamente pelo S3 Sink
 
 silver:  ## Executa apply Silver (Bronze → Iceberg MERGE INTO) para todas as tabelas
-	python -m ingestion.silver.apply_silver --table partners
-	python -m ingestion.silver.apply_silver --table accounts
-	python -m ingestion.silver.apply_silver --table transactions
-	python -m ingestion.silver.apply_silver --table payment_events
-	python -m ingestion.silver.apply_silver --table ledger_entries
+	$(PYTHON) -m ingestion.silver.apply_silver --table partners
+	$(PYTHON) -m ingestion.silver.apply_silver --table accounts
+	$(PYTHON) -m ingestion.silver.apply_silver --table transactions
+	$(PYTHON) -m ingestion.silver.apply_silver --table payment_events
+	$(PYTHON) -m ingestion.silver.apply_silver --table ledger_entries
 
-gold:  ## Executa transformações Gold via dbt
-	cd transform/dbt_project && dbt run --select marts
+gold:  ## Constrói modelos e executa todos os testes dbt
+	cd transform/dbt_project && $(DBT) build
 
 reconcile:  ## Roda script de reconciliação ponta-a-ponta (Postgres vs Bronze vs Silver)
-	python -m scripts.reconciliation.check_pipeline
+	$(PYTHON) -m scripts.reconciliation.check_pipeline
 
 migrate-silver-contract:  ## Dry-run da migração reversível da Silver legada
-	python -m scripts.migrate_silver_contract
+	$(PYTHON) -m scripts.migrate_silver_contract
 
 migrate-silver-contract-apply:  ## Preserva Silver legada e libera reconstrução v2
-	python -m scripts.migrate_silver_contract --apply
+	$(PYTHON) -m scripts.migrate_silver_contract --apply
 
 # ---------------------------------------------------------------------------
 # Manutenção Iceberg (Zeladoria)
@@ -104,13 +106,14 @@ remove-orphans:  ## Remove arquivos órfãos sem snapshot
 .PHONY: test dbt-test dbt-docs
 
 test:  ## Roda todos os testes (dbt + Python)
-	cd transform/dbt_project && dbt test
+	$(PYTHON) -m pytest -q
+	cd transform/dbt_project && $(DBT) test
 
 dbt-test:  ## Roda apenas testes dbt
-	cd transform/dbt_project && dbt test
+	cd transform/dbt_project && $(DBT) test
 
 dbt-docs:  ## Gera e serve documentação dbt
-	cd transform/dbt_project && dbt docs generate && dbt docs serve
+	cd transform/dbt_project && $(DBT) docs generate && $(DBT) docs serve
 
 # ---------------------------------------------------------------------------
 # Utilitários
@@ -119,10 +122,10 @@ dbt-docs:  ## Gera e serve documentação dbt
 .PHONY: generate-data psql clean help
 
 generate-data:  ## Gera dados simulados no Postgres via generator.py
-	python ingestion/generator.py
+	$(PYTHON) ingestion/generator.py
 
 generate-stream:  ## Gera dados de forma contínua para simular CDC
-	python ingestion/generator.py --continuous --delay 1.5
+	$(PYTHON) ingestion/generator.py --continuous --delay 1.5
 
 psql:  ## Abre shell psql no Postgres do container
 	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER:-lakehouse} -d $${POSTGRES_DB:-datalakehouse}

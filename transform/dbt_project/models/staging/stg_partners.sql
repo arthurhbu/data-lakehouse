@@ -5,7 +5,13 @@ with source as (
     from {{ source('silver', 'partners') }}
 
 )
-
-select * 
+select
+    partner_id,
+    name,
+    country,
+    partner_type,
+    status,
+    created_at,
+    updated_at
 from source
 where _cdc_deleted=false

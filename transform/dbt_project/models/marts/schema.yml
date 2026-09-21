@@ -60,3 +60,83 @@ models:
           - accepted_values:
               arguments:
                 values: ["active", "frozen", "closed"]
+
+  - name: dim_currencies
+    description: "Dimensão com uma linha por moeda presente nas contas ativas."
+
+    columns:
+      - name: currency_code
+        description: "Código ISO 4217 da moeda."
+        data_tests:
+          - not_null
+          - unique
+
+  - name: fct_daily_volume
+    description: >-
+      Volume bruto de transações concluídas. O grão é uma linha por data de
+      criação da transação e moeda original.
+
+    columns:
+      - name: transaction_date
+        data_tests:
+          - not_null
+
+      - name: currency_code
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_currencies')
+                field: currency_code
+
+      - name: transaction_count
+        data_tests:
+          - not_null
+
+      - name: gross_volume
+        data_tests:
+          - not_null
+
+  - name: fct_partner_net_position
+    description: >-
+      Posição líquida acumulada dos movimentos observados no ledger. O grão é
+      uma linha por parceiro e moeda; não representa saldo bancário com saldo
+      inicial. Net position positiva indica entrada líquida.
+
+    columns:
+      - name: partner_id
+        description: "Parceiro proprietário da conta movimentada."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_partners')
+                field: partner_id
+
+      - name: currency_code
+        description: "Moeda registrada no lançamento do ledger."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_currencies')
+                field: currency_code
+
+      - name: entry_count
+        data_tests:
+          - not_null
+
+      - name: total_debits
+        description: "Total enviado, exposto como valor positivo."
+        data_tests:
+          - not_null
+
+      - name: total_credits
+        description: "Total recebido, exposto como valor positivo."
+        data_tests:
+          - not_null
+
+      - name: net_position
+        description: "Créditos menos débitos dentro dos movimentos observados."
+        data_tests:
+          - not_null
