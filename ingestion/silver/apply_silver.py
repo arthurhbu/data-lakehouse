@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import traceback
 import uuid
@@ -113,12 +114,16 @@ class SilverJob:
         schema,
         date_str: str | None = None,
         timestamp_col: str | None = None,
+        max_lsn: int | None = None,
+        bronze_files: list[str] | None = None,
     ):
         self.table_name = table_name
         self.primary_key = primary_key
         self.date_str = date_str
         self.timestamp_col = timestamp_col
         self.schema = schema
+        self.max_lsn = max_lsn
+        self.bronze_files = bronze_files
         self.minio_endpoint = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
         self.catalog_uri = os.getenv("CATALOG_URI", "http://localhost:8181")
 
@@ -166,7 +171,9 @@ class SilverJob:
     def _sql_literal(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
-    def bronze_path(self) -> str:
+    def bronze_source(self) -> str | list[str]:
+        if self.bronze_files is not None:
+            return self.bronze_files
         if self.date_str:
             year, month, day = self.date_str.split("-")
             return (
@@ -179,9 +186,10 @@ class SilverJob:
         print(f"[{self.table_name}] Validando e deduplicando a Bronze...")
         create_latest_cdc_view(
             self.con,
-            self.bronze_path(),
+            self.bronze_source(),
             self.schema,
             self.primary_key,
+            self.max_lsn,
         )
 
     def _partition_spec(self) -> PartitionSpec:
@@ -248,6 +256,10 @@ class SilverJob:
         return normalized.cast(schema_to_pyarrow(table.schema()))
 
     def run(self) -> None:
+        if self.bronze_files == []:
+            print(f"[{self.table_name}] Nenhum arquivo novo no manifesto.")
+            return
+
         self.retrieve_data()
         table = self._load_or_create_table()
 
@@ -275,7 +287,20 @@ def main() -> None:
     )
     parser.add_argument("--table", required=True, choices=sorted(TABLE_CONFIGS))
     parser.add_argument("--date", help="Data de processamento em YYYY-MM-DD")
+    parser.add_argument("--max-lsn", type=int, help="Latest LSN to process")
+    parser.add_argument(
+        "--bronze-files-json",
+        help="Lista JSON explícita de objetos Bronze do micro-batch.",
+    )
     args = parser.parse_args()
+
+    bronze_files = None
+    if args.bronze_files_json is not None:
+        bronze_files = json.loads(args.bronze_files_json)
+        if not isinstance(bronze_files, list) or not all(
+            isinstance(path, str) for path in bronze_files
+        ):
+            parser.error("--bronze-files-json deve ser uma lista JSON de strings.")
 
     config = TABLE_CONFIGS[args.table]
     job = None
@@ -286,6 +311,8 @@ def main() -> None:
             schema=config["schema"],
             date_str=args.date,
             timestamp_col=config.get("timestamp_col"),
+            max_lsn=args.max_lsn,
+            bronze_files=bronze_files,
         )
         job.run()
     except Exception:

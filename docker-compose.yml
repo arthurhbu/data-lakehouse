@@ -6,11 +6,53 @@
 #   make up-catalog     → Iceberg REST Catalog
 #   make up             → core + cdc + catalog
 #
-# Os profiles transform, orchestration, serving e ai serão implementados
-# nas fases seguintes do projeto.
+# Orchestration: Airflow executa Silver/Gold/reconciliação sob demanda.
+# Os profiles transform, serving e ai seguem no roadmap.
 
 x-common-env: &common-env
   TZ: America/Sao_Paulo
+
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  profiles: ["orchestration"]
+  user: "${AIRFLOW_UID:-50000}:0"
+  environment: &airflow-env
+    TZ: America/Sao_Paulo
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-}@airflow-db:5432/airflow
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY:-}
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW__API__BASE_URL: http://localhost:8081
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+    AIRFLOW_ALERT_WEBHOOK_URL: ${AIRFLOW_ALERT_WEBHOOK_URL:-}
+    PYTHONPATH: /opt/lakehouse
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    POSTGRES_DB: ${POSTGRES_DB}
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_DUCKDB_ENDPOINT: minio:9000
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    CATALOG_URI: http://iceberg-rest:8181
+  volumes:
+    - ./orchestration/airflow/dags:/opt/airflow/dags:ro,z
+    - ./ingestion:/opt/lakehouse/ingestion:ro,z
+    - ./scripts:/opt/lakehouse/scripts:ro,z
+    - ./transform/dbt_project:/opt/lakehouse/transform/dbt_project:ro,z
+    - airflow-logs:/opt/airflow/logs
+    - airflow-auth:/opt/airflow/auth
+    - airflow-dbt-target:/opt/lakehouse/transform/dbt_project/target
+    - airflow-dbt-logs:/opt/lakehouse/transform/dbt_project/logs
+  networks:
+    - lakehouse-net
 
 services:
 
@@ -225,10 +267,86 @@ services:
       timeout: 5s
       retries: 5
 
-  # PROFILES: transform, orchestration, serving, ai
+  # PROFILE: orchestration — Airflow 3 com LocalExecutor.
+  airflow-db:
+    image: postgres:16-alpine
+    profiles: ["orchestration"]
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    networks:
+      - lakehouse-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-permissions:
+    image: postgres:16-alpine
+    profiles: ["orchestration"]
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["chown -R ${AIRFLOW_UID:-50000}:0 /auth /logs /dbt-target /dbt-logs"]
+    volumes:
+      - airflow-auth:/auth
+      - airflow-logs:/logs
+      - airflow-dbt-target:/dbt-target
+      - airflow-dbt-logs:/dbt-logs
+    networks:
+      - lakehouse-net
+
+  airflow-init:
+    <<: *airflow-common
+    command: db migrate
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+      airflow-permissions:
+        condition: service_completed_successfully
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-api-server:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+
+  # PROFILES: transform, serving, ai
   # Serão implementados nas fases seguintes. Stubs abaixo para referência.
   # transform (FASE 3):  DuckDB + dbt  → profile "transform"
-  # orchestration (FASE 4): Airflow     → profile "orchestration"
   # serving (FASE 6):  FastAPI + BI     → profile "serving"
   # ai (FASE 6):       Ollama + RAG     → profile "ai"
 
@@ -246,3 +364,13 @@ volumes:
     name: lakehouse-kafka-data
   minio-data:
     name: lakehouse-minio-data
+  airflow-db-data:
+    name: lakehouse-airflow-db-data
+  airflow-logs:
+    name: lakehouse-airflow-logs
+  airflow-auth:
+    name: lakehouse-airflow-auth
+  airflow-dbt-target:
+    name: lakehouse-airflow-dbt-target
+  airflow-dbt-logs:
+    name: lakehouse-airflow-dbt-logs

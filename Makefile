@@ -29,8 +29,8 @@ up-catalog:  ## Sobe Iceberg REST Catalog (inclui core)
 up-transform:  ## Gold roda localmente, sem profile Docker dedicado
 	@echo "Use make gold: o dbt roda pela .venv local, sem profile Docker."
 
-up-orchestration:  ## FASE 4 — ainda não implementado
-	@echo "Profile orchestration ainda não implementado (FASE 4)."
+up-orchestration:  ## Sobe Airflow local e dependências com DAG a cada 15 minutos
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile catalog --profile orchestration up -d --build
 
 up-serving:  ## FASE 6 — ainda não implementado
 	@echo "FastAPI e BI ainda não implementados (FASE 6). Use make up-trino para consultas."
@@ -42,7 +42,7 @@ up-ai:  ## FASE 6 — ainda não implementado
 	@echo "Profile ai ainda não implementado (FASE 6)."
 
 down:  ## Para e remove todos os containers
-	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile trino down
+	$(COMPOSE) --env-file $(ENV_FILE) --profile core --profile cdc --profile catalog --profile trino --profile orchestration down
 
 restart: down up  ## Reinicia toda a stack
 
@@ -103,7 +103,7 @@ remove-orphans:  ## Remove arquivos órfãos sem snapshot
 # Qualidade e testes
 # ---------------------------------------------------------------------------
 
-.PHONY: test dbt-test dbt-docs
+.PHONY: test dbt-test dbt-docs validate-airflow
 
 test:  ## Roda todos os testes (dbt + Python)
 	$(PYTHON) -m pytest -q
@@ -114,6 +114,10 @@ dbt-test:  ## Roda apenas testes dbt
 
 dbt-docs:  ## Gera e serve documentação dbt
 	cd transform/dbt_project && $(DBT) docs generate && $(DBT) docs serve
+
+validate-airflow:  ## Valida imports, dependências e schedule da DAG principal
+	$(COMPOSE) exec -T -w /opt/lakehouse airflow-scheduler \
+		python -m scripts.orchestration.validate_airflow_dag
 
 # ---------------------------------------------------------------------------
 # Utilitários

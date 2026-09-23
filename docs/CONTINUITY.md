@@ -1,9 +1,10 @@
-# Handoff — Gold concluída e continuidade no Airflow
+# Handoff — Gold concluída e Airflow manual validado
 
 ## Estado atual
 
-As fases CDC/Bronze, Silver MVP e Gold MVP estão concluídas. A próxima fase é
-**Airflow e operabilidade**. O método de trabalho continua sendo: explicar o
+As fases CDC/Bronze, Silver MVP e Gold MVP estão concluídas. A fase de
+**Airflow e operabilidade** começou com infraestrutura e DAG manual validadas.
+O método de trabalho continua sendo: explicar o
 conceito, implementar um incremento pequeno, provocar/observar seu comportamento
 e interpretar a evidência.
 
@@ -44,28 +45,43 @@ e interpretar a evidência.
   O volume local torna essa escolha adequada; incrementalidade entra somente
   quando custo ou tempo de execução justificarem o estado adicional.
 
-## Próximo ciclo: Airflow mínimo e explicável
+## Fase 4: Airflow concluído e validado
 
-1. Definir a arquitetura local mínima do Airflow e o papel de cada componente.
-2. Subir scheduler, UI, metadata database e um executor adequado ao projeto.
-3. Criar uma DAG `lakehouse_pipeline`:
-   `apply_silver` → `dbt build` → `reconciliation`.
-4. Configurar retries, timeout, data interval e concorrência.
-5. Provocar uma falha, observar os estados e reexecutar somente a task necessária.
-6. Executar um backfill e comprovar que a pipeline continua idempotente.
+1. O profile `orchestration` usa Postgres de metadados, API/UI, Dag Processor,
+   Scheduler e `LocalExecutor` com paralelismo global 2, sem Redis/Celery.
+2. `lakehouse_pipeline` roda a cada 15 minutos: captura manifesto incremental,
+   encerra cedo quando vazio, executa as cinco Silver em paralelo, valida as
+   chaves afetadas, roda `dbt build` e confirma checkpoint atômico.
+3. `lakehouse_pipeline_checkpoint` guarda `lsn` e offsets por tópico/partição.
+   O arquivo físico é escolhido por offset; o LSN continua protegendo a versão
+   da entidade. A falha induzida provou que Gold e checkpoint ficam bloqueados.
+4. `lakehouse_daily_reconciliation` roda às 06:00 UTC e mantém a reconciliação
+   completa Postgres = Bronze = Silver sem reler toda a Bronze a cada 15 minutos.
+5. O callback registra falhas e envia JSON para `AIRFLOW_ALERT_WEBHOOK_URL` quando
+   configurada. `make validate-airflow` verifica imports, grafo e schedule.
+6. **Runtime em 2026-09-23:** a DagRun agendada das 14:15 UTC processou os nove
+   objetos, passou por todas as tasks e gravou offsets 0/50/100; a DagRun manual
+   seguinte detectou manifesto vazio e pulou Silver/Gold. A reconciliação diária
+   também terminou em `success`.
+7. Backfill temporal fiel permanece fora do MVP porque Silver e Gold materializam
+   estado atual, não snapshots reconstruídos por `data_interval`.
 
 A Bronze não será transformada em tarefa batch: Debezium/Kafka/S3 Sink continuam
 responsáveis pelo CDC contínuo; Airflow orquestrará os consumidores batch.
+O laboratório Flink streaming virá após a primeira fase operacional do Airflow,
+com tabelas próprias e reconciliação no mesmo corte de LSN.
+
+**Limite consciente:** o checkpoint de arquivo usa o offset inicial presente no
+nome imutável produzido pelo S3 Sink. Caso o particionamento ou padrão de nomes do
+conector mude, o parser e a migração do checkpoint devem mudar explicitamente.
 
 ## Roadmap preservado após o Airflow
 
 **Alta prioridade:**
 
-1. Checkpoint/high watermark da Silver.
-2. Metadados operacionais: duração, linhas, último LSN e reconciliação.
-3. DLQ com correção e replay.
-4. Schema evolution compatível e rejeição de breaking change.
-5. Manutenção Iceberg orientada por snapshots e small files.
+1. DLQ com correção e replay.
+2. Schema evolution compatível e rejeição de breaking change.
+3. Manutenção Iceberg orientada por snapshots e small files.
 
 **Prioridade baixa, sem apagar:** MetricFlow, Schema Registry, contracts
 enforced, freshness contínua, stack dedicada de observabilidade, métricas de
@@ -79,10 +95,12 @@ make up
 .venv/bin/python ingestion/generator.py --transactions 10
 make silver
 make reconcile
+make validate-airflow
 cd transform/dbt_project
 ../../.venv/bin/dbt build
 ../../.venv/bin/dbt docs generate
 ```
 
-Leia este arquivo no início da próxima sessão. O próximo trabalho é entender e
-montar a infraestrutura mínima do Airflow, não adicionar novos marts.
+Leia este arquivo no início da próxima sessão. A fase Airflow está encerrada; o
+próximo laboratório planejado é streaming com Flink, sem remover os itens de
+DLQ, schema evolution e manutenção Iceberg do roadmap.

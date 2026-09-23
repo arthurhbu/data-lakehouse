@@ -76,6 +76,36 @@ def test_contract_supports_wrapped_and_unwrapped_and_uses_latest_lsn(tmp_path):
     ]
 
 
+def test_contract_respects_max_lsn_cutoff(tmp_path):
+    source = tmp_path / "ledger_cutoff.json"
+    _write_json_lines(
+        source,
+        [
+            _event("11111111-1111-1111-1111-111111111111", 100, "c", "1.0000"),
+            _event("22222222-2222-2222-2222-222222222222", 200, "c", "2.0000"),
+            _event("33333333-3333-3333-3333-333333333333", 300, "c", "3.0000"),
+        ],
+    )
+
+    config = TABLE_CONFIGS["ledger_entries"]
+    connection = duckdb.connect()
+    try:
+        create_latest_cdc_view(
+            connection,
+            str(source),
+            config["schema"],
+            config["primary_key"],
+            max_lsn=200,
+        )
+        rows = connection.execute(
+            "SELECT _cdc_lsn FROM bronze_latest ORDER BY _cdc_lsn"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert rows == [(100,), (200,)]
+
+
 def test_contract_fails_when_lsn_is_missing(tmp_path):
     source = tmp_path / "invalid.json"
     event = _event("33333333-3333-3333-3333-333333333333", 10, "c", "1.0000")

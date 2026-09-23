@@ -95,10 +95,48 @@ O projeto usa profiles para subir apenas o que você precisa:
 | `cdc` | Kafka Connect + Debezium | `make up-cdc` |
 | `catalog` | Iceberg REST Catalog | `make up-catalog` |
 | `trino` | Trino conectado ao catálogo Iceberg | `make up-trino` |
+| `orchestration` | Airflow 3 (Postgres de metadados, API/UI, Dag Processor e Scheduler com LocalExecutor) | `make up-orchestration` |
 
 O dbt da camada Gold já roda localmente pelo ambiente Python, sem um serviço
-Docker dedicado. Os profiles `transform`, `orchestration`, `serving` e `ai`
-continuam reservados para evoluções futuras.
+Docker dedicado. Os profiles `transform`, `serving` e `ai` continuam reservados
+para evoluções futuras.
+
+### Orquestração micro-batch com Airflow
+
+O CDC até a Bronze permanece contínuo e independente. A DAG
+`lakehouse_pipeline` roda a cada 15 minutos com `LocalExecutor`, lista os objetos
+novos por tópico/partição/offset e entrega à Silver somente o manifesto congelado
+da DagRun. LSN decide a versão da entidade; offset decide o progresso físico.
+
+1. No `.env`, preencha `AIRFLOW_DB_PASSWORD` e `AIRFLOW_JWT_SECRET` com valores
+   aleatórios (`openssl rand -hex 32`), e `AIRFLOW__CORE__FERNET_KEY` com uma
+   chave Fernet válida (comando indicado em `.env.example`). Não versione `.env`.
+2. Com o CDC e o S3 Sink já funcionando, execute `make up-orchestration`.
+3. Abra <http://localhost:8081>. O usuário local é `admin`; a senha inicial
+   gerada pode ser vista **somente no seu terminal** com:
+
+   ```bash
+   docker compose --env-file .env --profile core --profile catalog \
+     --profile orchestration exec airflow-api-server \
+     sed -n '1,20p' /opt/airflow/auth/passwords.json
+   ```
+
+4. Na UI, abra `lakehouse_pipeline` e observe as execuções criadas pelo scheduler.
+   Use `make validate-airflow` para conferir imports, dependências e schedule.
+
+O Postgres `airflow-db` guarda metadados, XComs e a Variable
+`lakehouse_pipeline_checkpoint`, que confirma atomicamente o último LSN e os
+offsets de arquivo por tópico/partição somente após a Gold. Falhas mantêm o
+checkpoint anterior; uma execução sem arquivos novos termina no short-circuit.
+O gate incremental valida na Silver as chaves do lote antes do `dbt build`.
+A DAG `lakehouse_daily_reconciliation`, às 06:00 UTC (03:00 em São Paulo), faz a
+comparação completa Postgres = Bronze = Silver. Alertas sempre vão para o log e,
+quando `AIRFLOW_ALERT_WEBHOOK_URL` está configurada, também para um webhook HTTP.
+
+Em 2026-09-23, a primeira DagRun agendada processou os nove objetos existentes,
+passou pelo gate, dbt e checkpoint; a execução seguinte encontrou zero objetos
+novos e não releu a Silver. O backfill temporal fiel continua fora do MVP: as
+tabelas representam estado atual e não snapshots por `data_interval`.
 
 ## Fases do Projeto
 
@@ -106,7 +144,7 @@ continuam reservados para evoluções futuras.
 - **FASE 1** — CDC Debezium + Bronze *(implementada e validada E2E)*
 - **FASE 2** — Silver Iceberg + apply idempotente *(MVP concluído)*
 - **FASE 3** — Gold dbt + testes *(MVP concluído)*
-- **FASE 4** — Airflow + operabilidade *(próxima fase)*
+- **FASE 4** — Airflow + operabilidade *(concluída e validada em runtime)*
 - **FASE 5** — LGPD + Reconciliação + Contracts
 - **FASE 6** — API + BI + RAG
 
@@ -174,19 +212,11 @@ também foram gerados.
 Os itens adiados continuam na lista, agora priorizados pelo aprendizado esperado
 para consolidação como engenheiro de dados pleno:
 
-1. **Airflow obrigatório:** orquestrar Silver → dbt build → reconciliação,
-   praticando dependências, retries, timeout, data interval, reexecução e
-   backfill. O S3 Sink continua responsável pela Bronze em streaming; Airflow
-   não substitui o CDC.
-2. **Incrementalidade e checkpoint:** evitar reler toda a Bronze, registrar o
-   high watermark processado e provar replay seguro.
-3. **Operabilidade:** registrar duração, linhas lidas/escritas, último LSN e
-   resultado da reconciliação; provocar uma falha e recuperar pelo Airflow.
-4. **DLQ e replay:** isolar um evento inválido sem perder os válidos e depois
+1. **DLQ e replay:** isolar um evento inválido sem perder os válidos e depois
    reprocessá-lo após a correção.
-5. **Schema evolution controlada:** testar uma adição compatível e rejeitar uma
+2. **Schema evolution controlada:** testar uma adição compatível e rejeitar uma
    alteração incompatível de tipo.
-6. **Manutenção Iceberg:** inspecionar snapshots e arquivos pequenos antes de
+3. **Manutenção Iceberg:** inspecionar snapshots e arquivos pequenos antes de
    implementar expiração e compactação.
 
 MetricFlow, Schema Registry, observabilidade com uma stack dedicada, API, BI e

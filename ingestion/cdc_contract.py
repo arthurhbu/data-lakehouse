@@ -32,6 +32,14 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _duckdb_json_source(path: str | list[str]) -> str:
+    if isinstance(path, str):
+        return _sql_literal(path)
+    if not path:
+        raise ValueError("A lista de arquivos Bronze não pode estar vazia.")
+    return "[" + ", ".join(_sql_literal(item) for item in path) + "]"
+
+
 def _json_scalar(json_column: str, *paths: str) -> str:
     extracts = ", ".join(
         f"json_extract_string({json_column}, {_sql_literal(path)})" for path in paths
@@ -59,7 +67,11 @@ def _duckdb_type(field_type) -> str:
     raise TypeError(f"Tipo Iceberg ainda não suportado no contrato CDC: {field_type}")
 
 
-def build_normalized_cdc_sql(path: str, schema: Schema, primary_key: str) -> str:
+def build_normalized_cdc_sql(
+    path: str | list[str],
+    schema: Schema,
+    primary_key: str,
+) -> str:
     """Cria o SQL que normaliza envelopes Debezium wrapped e unwrapped."""
 
     lsn_expr = _json_scalar(
@@ -100,7 +112,10 @@ def build_normalized_cdc_sql(path: str, schema: Schema, primary_key: str) -> str
         CREATE OR REPLACE TEMP TABLE bronze_normalized AS
         WITH bronze_raw AS (
             SELECT json AS event_json
-            FROM read_json_objects({_sql_literal(path)}, format = 'newline_delimited')
+            FROM read_json_objects(
+                {_duckdb_json_source(path)},
+                format = 'newline_delimited'
+            )
         )
         SELECT
             {op_expr} AS op,
@@ -112,11 +127,18 @@ def build_normalized_cdc_sql(path: str, schema: Schema, primary_key: str) -> str
 
 def create_latest_cdc_view(
     connection,
-    path: str,
+    path: str | list[str],
     schema: Schema,
     primary_key: str,
+    max_lsn: int | None = None,
 ) -> None:
     """Normaliza, valida e deduplica um lote CDC pelo maior LSN por chave."""
+
+    lsn_filter = (
+        f"WHERE source_lsn <= {max_lsn}"
+        if max_lsn is not None
+        else ""
+    )
 
     connection.execute(build_normalized_cdc_sql(path, schema, primary_key))
 
@@ -144,6 +166,7 @@ def create_latest_cdc_view(
         CREATE OR REPLACE TEMP VIEW bronze_latest AS
         SELECT *
         FROM bronze_normalized
+        {lsn_filter}
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY {primary_key}
             ORDER BY source_lsn DESC

@@ -19,7 +19,7 @@ lakehouse_transform:
           key_id: "{{ env_var('MINIO_ROOT_USER')}}"
           secret: "{{ env_var('MINIO_ROOT_PASSWORD')}}"
           region: us-east-1
-          endpoint: localhost:9000
+          endpoint: "{{ env_var('MINIO_DUCKDB_ENDPOINT', 'localhost:9000') }}"
           use_ssl: false
           url_style: path
         
