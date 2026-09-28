@@ -34,6 +34,9 @@ orchestration/airflow/airflow.db
 transform/dbt_project/target/
 transform/dbt_project/dbt_packages/
 transform/dbt_project/logs/
+projects/*/transform/dbt_project/target/
+projects/*/transform/dbt_project/dbt_packages/
+projects/*/transform/dbt_project/logs/
 
 # DuckDB
 *.duckdb
@@ -49,3 +52,11 @@ minio-data/
 .coverage
 htmlcov/
 .pytest_cache/
+
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars

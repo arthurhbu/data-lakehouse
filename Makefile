@@ -6,7 +6,7 @@
 COMPOSE = docker compose
 ENV_FILE = .env
 PYTHON = .venv/bin/python
-DBT = ../../.venv/bin/dbt
+DBT = $(CURDIR)/.venv/bin/dbt
 
 # ---------------------------------------------------------------------------
 # Infraestrutura (Docker Compose profiles)
@@ -59,28 +59,28 @@ logs:  ## Mostra logs de todos os containers (follow)
 .PHONY: register-connectors bronze silver gold
 
 register-connectors:  ## Registra/atualiza Debezium e S3 Sink no Kafka Connect
-	$(PYTHON) -m scripts.register_connectors
+	$(PYTHON) -m projects.finance.scripts.register_connectors
 
 bronze: register-connectors  ## Bronze é materializada continuamente pelo S3 Sink
 
 silver:  ## Executa apply Silver (Bronze → Iceberg MERGE INTO) para todas as tabelas
-	$(PYTHON) -m ingestion.silver.apply_silver --table partners
-	$(PYTHON) -m ingestion.silver.apply_silver --table accounts
-	$(PYTHON) -m ingestion.silver.apply_silver --table transactions
-	$(PYTHON) -m ingestion.silver.apply_silver --table payment_events
-	$(PYTHON) -m ingestion.silver.apply_silver --table ledger_entries
+	$(PYTHON) -m projects.finance.ingestion.silver.apply_silver --table partners
+	$(PYTHON) -m projects.finance.ingestion.silver.apply_silver --table accounts
+	$(PYTHON) -m projects.finance.ingestion.silver.apply_silver --table transactions
+	$(PYTHON) -m projects.finance.ingestion.silver.apply_silver --table payment_events
+	$(PYTHON) -m projects.finance.ingestion.silver.apply_silver --table ledger_entries
 
 gold:  ## Constrói modelos e executa todos os testes dbt
-	cd transform/dbt_project && $(DBT) build
+	cd projects/finance/transform/dbt_project && $(DBT) build
 
 reconcile:  ## Roda script de reconciliação ponta-a-ponta (Postgres vs Bronze vs Silver)
-	$(PYTHON) -m scripts.reconciliation.check_pipeline
+	$(PYTHON) -m projects.finance.scripts.reconciliation.check_pipeline
 
 migrate-silver-contract:  ## Dry-run da migração reversível da Silver legada
-	$(PYTHON) -m scripts.migrate_silver_contract
+	$(PYTHON) -m projects.finance.scripts.migrate_silver_contract
 
 migrate-silver-contract-apply:  ## Preserva Silver legada e libera reconstrução v2
-	$(PYTHON) -m scripts.migrate_silver_contract --apply
+	$(PYTHON) -m projects.finance.scripts.migrate_silver_contract --apply
 
 # ---------------------------------------------------------------------------
 # Manutenção Iceberg (Zeladoria)
@@ -91,13 +91,13 @@ migrate-silver-contract-apply:  ## Preserva Silver legada e libera reconstruçã
 maintenance: expire-snapshots compact remove-orphans  ## Executa toda a zeladoria
 
 compact:  ## Compaction dos data files
-	python scripts/maintenance/compact.py
+	python projects/finance/scripts/maintenance/compact.py
 
 expire-snapshots:  ## Remove snapshots antigos (> 48h)
-	python scripts/maintenance/expire_snapshots.py
+	python projects/finance/scripts/maintenance/expire_snapshots.py
 
 remove-orphans:  ## Remove arquivos órfãos sem snapshot
-	python scripts/maintenance/remove_orphans.py
+	python projects/finance/scripts/maintenance/remove_orphans.py
 
 # ---------------------------------------------------------------------------
 # Qualidade e testes
@@ -107,17 +107,17 @@ remove-orphans:  ## Remove arquivos órfãos sem snapshot
 
 test:  ## Roda todos os testes (dbt + Python)
 	$(PYTHON) -m pytest -q
-	cd transform/dbt_project && $(DBT) test
+	cd projects/finance/transform/dbt_project && $(DBT) test
 
 dbt-test:  ## Roda apenas testes dbt
-	cd transform/dbt_project && $(DBT) test
+	cd projects/finance/transform/dbt_project && $(DBT) test
 
 dbt-docs:  ## Gera e serve documentação dbt
-	cd transform/dbt_project && $(DBT) docs generate && $(DBT) docs serve
+	cd projects/finance/transform/dbt_project && $(DBT) docs generate && $(DBT) docs serve
 
 validate-airflow:  ## Valida imports, dependências e schedule da DAG principal
 	$(COMPOSE) exec -T -w /opt/lakehouse airflow-scheduler \
-		python -m scripts.orchestration.validate_airflow_dag
+		python -m projects.finance.scripts.orchestration.validate_airflow_dag
 
 # ---------------------------------------------------------------------------
 # Utilitários
@@ -126,10 +126,10 @@ validate-airflow:  ## Valida imports, dependências e schedule da DAG principal
 .PHONY: generate-data psql clean help
 
 generate-data:  ## Gera dados simulados no Postgres via generator.py
-	$(PYTHON) ingestion/generator.py
+	$(PYTHON) projects/finance/ingestion/generator.py
 
 generate-stream:  ## Gera dados de forma contínua para simular CDC
-	$(PYTHON) ingestion/generator.py --continuous --delay 1.5
+	$(PYTHON) projects/finance/ingestion/generator.py --continuous --delay 1.5
 
 psql:  ## Abre shell psql no Postgres do container
 	$(COMPOSE) exec postgres psql -U $${POSTGRES_USER:-lakehouse} -d $${POSTGRES_DB:-datalakehouse}

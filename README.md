@@ -1,4 +1,4 @@
-# Data Lakehouse Projeto Arthur
+# Elysium Data Lakehouse
 
 Projeto pessoal e educacional de Data Lakehouse open-source. A plataforma é construída em etapas para praticar ingestão CDC, arquitetura Medallion, modelagem analítica, qualidade e operação sem esconder os conceitos atrás da implementação.
 
@@ -21,45 +21,31 @@ Projeto pessoal e educacional de Data Lakehouse open-source. A plataforma é con
 | BI | Superset / Metabase |
 | IA/RAG | LangChain + Ollama |
 
+## Organização dos projetos
+
+O repositório reúne domínios de dados independentes sobre uma infraestrutura
+local compartilhada. O CDC financeiro está em
+[`projects/finance/`](projects/finance/README.md); o projeto de aviação começa
+em [`projects/aviation/`](projects/aviation/README.md). Comandos `make`, `.env`,
+Docker Compose, imagens e serviços compartilhados continuam na raiz.
+
 ## Estrutura do Repositório
 
 ```
 data-lakehouse/
-├── docker/                  # Dockerfiles customizados
-├── docker-compose.yml       # Compose mestre com profiles
-├── infra/
-│   ├── postgres/            # DDL + postgresql.conf
-│   ├── kafka/connectors/    # JSON configs Debezium
-│   ├── minio/policies/      # Bucket policies
-│   └── catalog/             # Config REST Catalog
-├── ingestion/
-│   ├── generator.py         # Simulador de dados
-│   ├── cdc_contract.py      # Normalização/validação do envelope Debezium
-│   ├── bronze/              # Bronze persistida pelo Kafka Connect S3 Sink
-│   ├── silver/              # Apply idempotente em tabelas Iceberg
-│   └── cdc/                 # Configs e validações CDC
-├── transform/
-│   └── dbt_project/         # Projeto dbt (staging/marts/semantic)
-├── orchestration/
-│   └── airflow/             # DAGs, plugins, config
-├── serving/
-│   ├── api/                 # FastAPI
-│   └── ai/                  # RAG pipeline
-├── quality/
-│   ├── contracts/           # Data contracts YAML
-│   ├── slos/                # SLO definitions
-│   └── runbooks/            # Runbooks de incidentes
-├── scripts/
-│   ├── maintenance/         # Compaction, snapshot expiry
-│   └── reconciliation/      # Reconciliação batch
-├── docs/                    # ADRs e documentação técnica
-├── .env.example
-├── Makefile
-├── requirements.txt
-└── README.md
+├── projects/
+│   ├── finance/             # CDC, Silver, Gold, DAGs, testes e DDL financeiros
+│   └── aviation/            # Novo domínio; estudo das fontes antes do código
+├── docker/                  # Imagens dos serviços compartilhados
+├── infra/                   # MinIO, catálogo e Trino compartilhados
+├── docker-compose.yml       # Serviços locais e volumes persistentes
+├── Makefile                 # Comandos existentes do projeto financeiro
+├── .env.example             # Variáveis locais; .env não é versionado
+└── requirements.txt         # Dependências Python locais atuais
 ```
 
-Para retomar o desenvolvimento em uma nova sessao, consulte [docs/CONTINUITY.md](docs/CONTINUITY.md).
+Para retomar o CDC financeiro, consulte
+[projects/finance/docs/CONTINUITY.md](projects/finance/docs/CONTINUITY.md).
 
 ## Quick Start
 

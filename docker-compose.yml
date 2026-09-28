@@ -43,14 +43,12 @@ x-airflow-common: &airflow-common
     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     CATALOG_URI: http://iceberg-rest:8181
   volumes:
-    - ./orchestration/airflow/dags:/opt/airflow/dags:ro,z
-    - ./ingestion:/opt/lakehouse/ingestion:ro,z
-    - ./scripts:/opt/lakehouse/scripts:ro,z
-    - ./transform/dbt_project:/opt/lakehouse/transform/dbt_project:ro,z
+    - ./projects/finance/orchestration/airflow/dags:/opt/airflow/dags:ro,z
+    - ./projects/finance:/opt/lakehouse/projects/finance:ro,z
     - airflow-logs:/opt/airflow/logs
     - airflow-auth:/opt/airflow/auth
-    - airflow-dbt-target:/opt/lakehouse/transform/dbt_project/target
-    - airflow-dbt-logs:/opt/lakehouse/transform/dbt_project/logs
+    - airflow-dbt-target:/opt/lakehouse/projects/finance/transform/dbt_project/target
+    - airflow-dbt-logs:/opt/lakehouse/projects/finance/transform/dbt_project/logs
   networks:
     - lakehouse-net
 
@@ -77,7 +75,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro,Z
+      - ./projects/finance/infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro,Z
     networks:
       - lakehouse-net
     healthcheck:
@@ -175,6 +173,34 @@ services:
     networks:
       - lakehouse-net
 
+  aviation-collector:
+    build:
+      context: .
+      dockerfile: projects/aviation/collector/Dockerfile
+    profiles: ["aviation"]
+    container_name: lakehouse-aviation-collector
+    environment:
+      <<: *common-env
+      PYTHONUNBUFFERED: "1"
+      OPENSKY_CLIENT_ID: ${OPENSKY_CLIENT_ID:-}
+      OPENSKY_CLIENT_SECRET: ${OPENSKY_CLIENT_SECRET:-}
+      AVIATION_BBOX_LAMIN: ${AVIATION_BBOX_LAMIN:-}
+      AVIATION_BBOX_LOMIN: ${AVIATION_BBOX_LOMIN:-}
+      AVIATION_BBOX_LAMAX: ${AVIATION_BBOX_LAMAX:-}
+      AVIATION_BBOX_LOMAX: ${AVIATION_BBOX_LOMAX:-}
+      AVIATION_POLL_INTERVAL_SECONDS: ${AVIATION_POLL_INTERVAL_SECONDS:-60}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_BRONZE: ${MINIO_BUCKET_BRONZE:-bronze}
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 45s
+    networks:
+      - lakehouse-net
+
   # PROFILE cdc — Kafka Connect + Debezium
   kafka-connect:
     build:
@@ -199,7 +225,7 @@ services:
     ports:
       - "${CONNECT_REST_PORT:-8083}:8083"
     volumes:
-      - ./infra/kafka/connectors:/kafka/connectors:ro,Z
+      - ./projects/finance/infra/kafka-connectors:/kafka/connectors:ro,Z
     networks:
       - lakehouse-net
     healthcheck:
